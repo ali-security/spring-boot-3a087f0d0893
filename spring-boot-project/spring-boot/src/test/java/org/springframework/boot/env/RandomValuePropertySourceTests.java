@@ -16,9 +16,13 @@
 
 package org.springframework.boot.env;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.Random;
 import java.util.UUID;
+import java.util.function.IntSupplier;
 
 import org.junit.jupiter.api.Test;
 
@@ -50,7 +54,7 @@ class RandomValuePropertySourceTests {
 
 	@Test
 	void getPropertyWhenStringReturnsValue() {
-		assertThat(this.source.getProperty("random.string")).isNotNull();
+		assertThat(this.source.getProperty("random.string")).isNotNull().asString().containsPattern("^[0-9a-f]{32}$");
 	}
 
 	@Test
@@ -196,6 +200,66 @@ class RandomValuePropertySourceTests {
 	@Test
 	void randomStringIs32CharsLong() {
 		assertThat(this.source.getProperty("random.string")).asString().hasSize(32);
+	}
+
+	@Test
+	void getPropertyWhenIntReturnsUnpredictableValue() {
+		Random insecure = new Random();
+		assertThat(isPredictable(nextInts(insecure::nextInt))).isTrue();
+		assertThat(isPredictable(nextInts(() -> (Integer) this.source.getProperty("random.int")))).isFalse();
+	}
+
+	@Test
+	void getPropertyWhenStringReturnsUnpredictableValue() {
+		byte[] bytes = new byte[16];
+		new Random().nextBytes(bytes);
+		assertThat(isPredictable(toInts(HexFormat.of().formatHex(bytes)))).isTrue();
+		assertThat(isPredictable(toInts((String) this.source.getProperty("random.string")))).isFalse();
+	}
+
+	private int[] nextInts(IntSupplier supplier) {
+		int[] values = new int[4];
+		for (int i = 0; i < values.length; i++) {
+			values[i] = supplier.getAsInt();
+		}
+		return values;
+	}
+
+	private int[] toInts(String hex) {
+		ByteBuffer buffer = ByteBuffer.wrap(HexFormat.of().parseHex(hex)).order(ByteOrder.LITTLE_ENDIAN);
+		int[] values = new int[buffer.remaining() / Integer.BYTES];
+		for (int i = 0; i < values.length; i++) {
+			values[i] = buffer.getInt();
+		}
+		return values;
+	}
+
+	/**
+	 * Attempt to recover the internal state of a {@link Random} (a 48-bit linear
+	 * congruential generator) from its first {@code nextInt()} output by brute-forcing
+	 * the 16 hidden bits, returning whether that state predicts all subsequent outputs.
+	 * @param values consecutive {@code nextInt()} outputs
+	 * @return {@code true} if the values could be predicted
+	 */
+	private boolean isPredictable(int[] values) {
+		long high = (values[0] & 0xFFFFFFFFL) << 16;
+		for (long low = 0; low < (1L << 16); low++) {
+			if (predicts(high | low, values)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean predicts(long seed, int[] values) {
+		long state = seed;
+		for (int i = 1; i < values.length; i++) {
+			state = (state * 0x5DEECE66DL + 0xBL) & ((1L << 48) - 1);
+			if ((int) (state >>> 16) != values[i]) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 }
